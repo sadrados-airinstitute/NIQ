@@ -1,0 +1,4 @@
+2025-07-20 02:01:09,614 - INFO - Test INFO log: This is an info-level log.
+2025-07-20 02:01:09,614 - WARNING - Test WARNING log: This is a warning-level log.
+2025-07-20 02:01:09,615 - ERROR - Test ERROR log: This is an error-level log.
+2025-07-20 02:01:09,615 - ERROR - HTTPException occurred: I'm a teapot. Just testing HTTPException handling.

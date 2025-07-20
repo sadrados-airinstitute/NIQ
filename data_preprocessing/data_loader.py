@@ -5,7 +5,7 @@ from PIL import Image
 import os
 import pandas as pd
 
-class MultimodalDataset(Dataset):
+class NutritionInfoExtractorDataset(Dataset):
     def __init__(self, image_paths, text_data, labels, transform=None):
         self.image_paths = image_paths  # List of image paths
         self.text_data = text_data  # Corresponding text data (OCR results or structured text)

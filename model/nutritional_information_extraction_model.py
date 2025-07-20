@@ -1,11 +1,11 @@
-from .ocr_model import extract_text_from_image
-from .entity_recognition_model import extract_nutritional_entities
+from .ocr_model import OCRModel
+from .entity_recognition_model import EntityRecognitionModel
 
 
-class NutritionalInfoExtractor:
+class NutritionInfoExtractor:
     def __init__(self, ocr_model, ner_model):
-        self.ocr_model = ocr_model  # OCR model instance
-        self.ner_model = ner_model  # NER model instance
+        self.ocr_model = OCRModel()  # OCR model instance
+        self.ner_model = EntityRecognitionModel()  # NER model instance
 
     def extract_nutritional_info_from_image(self, image_path: str):
         """

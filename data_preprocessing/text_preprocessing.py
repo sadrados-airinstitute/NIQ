@@ -2,9 +2,10 @@ import re
 import string
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
+import nltk
 
 # Download stopwords if you haven't already
-import nltk
+
 nltk.download('punkt')
 nltk.download('stopwords')
 

@@ -1,41 +1,55 @@
 import logging
+import os
 
-def setup_logger(log_dir, log_file="training.log"):
-    """
-    Setup the logger to write logs to a file and console.
-    
-    Args:
-        log_dir (str): The directory where the log file will be saved.
-        log_file (str): The name of the log file.
+class Logger:
+    def __init__(self, log_dir: str, log_file: str = "api.log"):
+        """
+        Initializes the Logger object to log to both a file and console.
         
-    Returns:
-        logger (logging.Logger): Configured logger.
-    """
-    # Create log directory if it doesn't exist
-    os.makedirs(log_dir, exist_ok=True)
+        Args:
+            log_dir (str): The directory where the log file will be saved.
+            log_file (str): The name of the log file (default is 'training.log').
+        """
+        self.log_dir = log_dir
+        self.log_file = log_file
+        self.logger = logging.getLogger(log_file.split("/")[-1])
+        self.setup_logger()
 
-    # Define the log file path
-    log_path = os.path.join(log_dir, log_file)
-    
-    # Create a logger
-    logger = logging.getLogger("training_logger")
-    logger.setLevel(logging.INFO)  # Set log level to INFO
+    def setup_logger(self):
+        """
+        Set up the logger to write logs to a file and console.
+        """
+        # Create log directory if it doesn't exist
+        os.makedirs(self.log_dir, exist_ok=True)
+        
+        # Define the log file path
+        log_path = os.path.join(self.log_dir, self.log_file)
+        
+        # Set the logger level
+        self.logger.setLevel(logging.INFO)
 
-    # Create a file handler to write logs to a file
-    file_handler = logging.FileHandler(log_path)
-    file_handler.setLevel(logging.INFO)
-    
-    # Create a console handler to log to console
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    
-    # Set up a formatter to display logs in a clear format
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
-    
-    # Add the handlers to the logger
-    logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
-    
-    return logger
+        # Create a file handler to write logs to the file
+        file_handler = logging.FileHandler(log_path)
+        file_handler.setLevel(logging.DEBUG)
+        
+        # Create a console handler to log to the console
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.DEBUG)
+        
+        # Set up a formatter for clear logs
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(formatter)
+        console_handler.setFormatter(formatter)
+        
+        # Add the handlers to the logger
+        self.logger.addHandler(file_handler)
+        self.logger.addHandler(console_handler)
+
+    def get_logger(self):
+        """
+        Returns the logger object.
+        
+        Returns:
+            logger (logging.Logger): The configured logger.
+        """
+        return self.logger
