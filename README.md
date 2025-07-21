@@ -1,11 +1,11 @@
 # NIQ
 
-# NIQ - Nutritional information extraction from product images
+# NIQ - Nutritional Information Extraction from Product Images
 
 This repository is structured to solve a two-part task aimed at the exploration and modeling of data derived from **Open Food Facts**, a large-scale public database with multimodal product information.
 
 
-## Project folder structure
+## Project Folder Structure
 
 ```plaintext
 
@@ -40,3 +40,8 @@ NIQ
 ├── NIQ.drawio
 ├── README.md
 └── requirements.txt
+```
+
+## System Pipeline
+
+![NIQ architecture diagram](NIQ.drawio.png)
