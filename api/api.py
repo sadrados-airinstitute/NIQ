@@ -1,5 +1,4 @@
 from fastapi import FastAPI, BackgroundTasks, File, UploadFile, HTTPException
-from model.nutritional_information_extraction_model import NutritionInfoExtractor
 from model.ocr_model import OCRModel
 from model.entity_recognition_model import EntityRecognitionModel
 from model.train import EntityRecognitionModelTrainer
@@ -7,15 +6,19 @@ from utils.logger import Logger
 from io import BytesIO
 from PIL import Image
 import requests
+import os
+from typing import Optional
+from model.nutrition_extraction_pipeline import NutritionExtractionPipeline
+from utils.create_dataset import ClassifierDataset, EntityRecognitionDataset
+from model.evaluation import ClassifierModelEvaluator, EntityRecognitionModelEvaluator
+from model.classifier_model import ClassifierModel
+from data_preprocessing.create_dataset import EntityRecognitionDataset
+from model.entity_recognition_model import EntityRecognitionModel
 
 class API:
     def __init__(self):
         self.logger = Logger(log_dir="logs", log_file="api.log")
         self.logger_instance = self.logger.get_logger()
-        self.ocr_model = OCRModel()
-        self.entity_recognition_model = EntityRecognitionModel()
-        self.nutrition_info_extractor = NutritionInfoExtractor(ocr_model=self.ocr_model, ner_model=self.entity_recognition_model)
-        self.entity_recognition_model_trainer = EntityRecognitionModelTrainer()
         self.app = FastAPI()
         
     def create_endpoints(self):
@@ -26,116 +29,212 @@ class API:
         
         
         # Define the /start_training endpoint
-        @self.app.post("/start_training")
-        async def start_training(background_tasks: BackgroundTasks, epochs: int = 10):
+        @self.app.post("/train_entity_recognition_model")
+        async def start_training(background_tasks: BackgroundTasks, csv_path: str, model_path: Optional[str] = None, model_name: Optional[str] = None, epochs: Optional[int] = 10, learning_rate: Optional[float] = 5e-5):
             """
             Endpoint to start training the model in the background.
 
             Args:
-                epochs (int): The number of epochs to train the model for.
+                csv_path (str): Path to CSV file with training data.
+                model_path (Optional[str]): Directory to save or load the model from.
+                model_name (Optional[str]): Model identifier (e.g., "bert-base-cased").
+                epochs (Optional[int]): Number of training epochs (default: 10).
+                learning_rate (Optional[float]): Learning rate (default: 5e-5).
 
             Returns:
                 dict: Confirmation message.
             """
+            # Validate CSV file
             try:
-                # Ensure epochs are positive
-                if epochs <= 0:
+                if not csv_path.endswith(".csv"):
+                    raise ValueError("Provided training file is not a CSV.")
+                if not os.path.isfile(csv_path):
+                    raise FileNotFoundError(f"CSV file not found at: {csv_path}")
+                
+                # Validate epochs
+                if epochs is None or epochs <= 0:
                     raise ValueError("Epochs must be a positive integer.")
-                
-                self.logger_instance.info(f"Starting model training with {epochs} epochs.")
-                background_tasks.add_task(self.model_trainer.train_model, epochs=epochs)
-                
-                self.logger_instance.info(f"Model training task added to the background with {epochs} epochs.")
-                return {"message": f"Training has started in the background for {epochs} epochs."}
 
-            except ValueError as ve:
-                self.logger_instance.error(f"Invalid epochs value: {str(ve)}")
-                raise HTTPException(status_code=400, detail=f"Invalid input: {str(ve)}")
+                # Validate learning rate
+                if learning_rate is None or learning_rate <= 0:
+                    raise ValueError("Learning rate must be a positive float.")
+
+                self.logger_instance.info(f"Initiating training with CSV: {csv_path}, epochs: {epochs}, learning_rate: {learning_rate}, model: {model_name}, save_to: {model_path}")
+
+                er_model_trainer = EntityRecognitionModelTrainer(csv_path=csv_path, model_path=model_path, model_name=model_name, epochs=epochs, learning_rate=learning_rate)
+                
+                background_tasks.add_task(
+                    er_model_trainer.train_model,
+                )
+
+                return {"message": f"Training has started in the background using CSV: {csv_path}, epochs: {epochs}, learning_rate: {learning_rate}, model: {model_name}, save_to: {model_path}"}
+
+            except (ValueError, FileNotFoundError) as ve:
+                self.logger_instance.error(f"Validation error: {str(ve)}")
+                raise HTTPException(status_code=400, detail=str(ve))
+
             except Exception as e:
-                self.logger_instance.error(f"Error starting training: {str(e)}")
-                raise HTTPException(status_code=500, detail=f"Error starting training: {str(e)}")
+                self.logger_instance.error(f"Unexpected error: {str(e)}")
+                raise HTTPException(status_code=500, detail="Error while starting training.")
 
-        # Define the /extract_nutritional_info_from_image endpoint
-        @self.app.post("/extract_nutritional_info_from_image")
-        async def extract_nutritional_info_from_image_endpoint(image: UploadFile = File(...)):
+        # Define the /start_training endpoint
+        @self.app.post("/train_classifier_model")
+        async def start_training_2(background_tasks: BackgroundTasks, csv_path: str, model_path: Optional[str] = None, model_name: Optional[str] = None, epochs: Optional[int] = 10, learning_rate: Optional[float] = 5e-5):
             """
-            Endpoint to extract nutritional information from an uploaded image.
+            Endpoint to start training the model in the background.
 
             Args:
-                image (UploadFile): The image file containing nutritional information.
+                csv_path (str): Path to CSV file with training data.
+                model_path (Optional[str]): Directory to save or load the model from.
+                model_name (Optional[str]): Model identifier (e.g., "bert-base-cased").
+                epochs (Optional[int]): Number of training epochs (default: 10).
+                learning_rate (Optional[float]): Learning rate (default: 5e-5).
 
             Returns:
-                dict: The extracted nutritional information.
+                dict: Confirmation message.
+            """
+            # Validate CSV file
+            try:
+                if not csv_path.endswith(".csv"):
+                    raise ValueError("Provided training file is not a CSV.")
+                if not os.path.isfile(csv_path):
+                    raise FileNotFoundError(f"CSV file not found at: {csv_path}")
+                
+                # Validate epochs
+                if epochs is None or epochs <= 0:
+                    raise ValueError("Epochs must be a positive integer.")
+
+                # Validate learning rate
+                if learning_rate is None or learning_rate <= 0:
+                    raise ValueError("Learning rate must be a positive float.")
+
+                self.logger_instance.info(f"Initiating training with CSV: {csv_path}, epochs: {epochs}, learning_rate: {learning_rate}, model: {model_name}, save_to: {model_path}")
+
+                er_model_trainer = ClassifiernModelTrainer(csv_path=csv_path, model_path=model_path, model_name=model_name, epochs=epochs, learning_rate=learning_rate)
+                
+                background_tasks.add_task(
+                    er_model_trainer.train_model,
+                )
+
+                return {"message": f"Training has started in the background using CSV: {csv_path}, epochs: {epochs}, learning_rate: {learning_rate}, model: {model_name}, save_to: {model_path}"}
+
+            except (ValueError, FileNotFoundError) as ve:
+                self.logger_instance.error(f"Validation error: {str(ve)}")
+                raise HTTPException(status_code=400, detail=str(ve))
+
+            except Exception as e:
+                self.logger_instance.error(f"Unexpected error: {str(e)}")
+                raise HTTPException(status_code=500, detail="Error while starting training.")
+
+
+        @self.app.post("/extract_nutritional_info_from_folder")
+        def extract_nutritional_info_from_folder(image_folder_path: str, ner_checkpoint_dir: str, classifier_checkpoint_dir: str , languages: Optional[list] = ["en", "fr", "es", "de", "it"]):
+            """
+            Extracts nutritional information from all images in a local folder.
+
+            Args:
+                image_folder_path (str): Path to the folder containing image files.
+                ner_checkpoint_dir (str): Path to the NER model checkpoint.
+                classifier_checkpoint_dir (str): Path to the classifier model checkpoint.
+                languages (list): List of languages for EasyOCR (ISO 639-1 codes).
+
+            Returns:
+                dict: Dictionary with extracted nutritional information per image.
+            """ 
+            try:
+                if not os.path.isdir(folder_path):
+                    raise HTTPException(status_code=400, detail=f"Folder does not exist: {folder_path}")
+
+                supported_ext = (".jpg", ".jpeg", ".png")
+                image_paths = [os.path.join(folder_path, fname) for fname in os.listdir(folder_path) if fname.lower().endswith(supported_ext)]
+
+                if not image_paths:
+                    raise HTTPException(status_code=404, detail="No image files found in the folder.")
+
+                # Initialize the pipeline only once
+                nutrition_info_extractor = NutritionExtractionPipeline(image_paths=image_paths, ner_checkpoint_dir=ner_checkpoint_dir, classifier_checkpoint_dir=classifier_checkpoint_dir, languages=languages)
+
+                # Process all images
+                results = nutrition_info_extractor.run()
+
+                return {"results": results}
+
+            except Exception as e:
+                self.logger_instance.error(f"Error processing folder: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+        @self.app.post("/evaluate_classifier_model")
+        def evaluate_classifier_model(csv_path: str, model_checkpoint_dir: str, max_length: int = 64, batch_size: int = 16):
+            """
+            Evaluates a trained binary classifier model (linked vs. not linked triplets).
+
+            Args:
+                csv_path (str): CSV with pre-labeled triplets and binary targets.
+                model_checkpoint_dir (str): Directory with classifier model + tokenizer.
+                max_length (int): Max token length.
+                batch_size (int): Evaluation batch size.
+
+            Returns:
+                dict: Evaluation metrics (accuracy, precision, recall, F1).
             """
             try:
-                # Validate if file is an image
-                if not image.content_type.startswith('image/'):
-                    self.logger_instance.error("Uploaded file is not an image.")
-                    raise HTTPException(status_code=400, detail="Uploaded file must be an image.")
+                
+                # Load dataset
+                dataset = ClassifierDataset(csv_path=csv_path, max_length=max_length)
+                dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
-                # Read image content
-                image_content = await image.read()
-                image_pil = Image.open(BytesIO(image_content))
+                # Load model
+                model_wrapper = ClassifierModel(checkpoint_dir=model_checkpoint_dir)
+                evaluator = ClassifierModelEvaluator(model=model_wrapper.model, tokenizer=model_wrapper.tokenizer, dataloader=dataloader)
 
-                # Log the image processing
-                self.logger_instance.info("Extracting nutritional information from uploaded image.")
+                metrics = evaluator.evaluate()
 
-                # Extract nutritional info
-                nutritional_info = self.nutrition_info_extractor.extract_nutritional_info_from_image(image_pil)
+                return {"classifier_evaluation": metrics}
 
-                # Log successful extraction
-                self.logger_instance.info("Successfully extracted nutritional information from image.")
-
-                return {"nutritional_info": nutritional_info}
-
-            except HTTPException as he:
-                # Log the error if it's an HTTPException
-                self.logger_instance.error(f"HTTP error: {str(he.detail)}")
-                raise he
             except Exception as e:
-                # General error logging for image processing
-                self.logger_instance.error(f"Error extracting nutritional information: {str(e)}")
-                raise HTTPException(status_code=500, detail="Error processing the image.")
-
-        @self.app.post("/extract_nutritional_info_from_url")
-        async def extract_info_from_url(url: str):
+                self.logger_instance.error(f"Error evaluating classifier: {str(e)}")
+                raise HTTPException(status_code=500, detail=str(e))
+            
+            
+        @self.app.post("/evaluate_ner_model")
+        def evaluate_ner_model(csv_path: str, model_checkpoint_dir: str, max_length: int = 128, batch_size: int = 8):
             """
-            Endpoint to extract nutritional information from an image URL.
+            Evaluates a trained NER (BIO tagging) model on a validation set.
+
+            Args:
+                csv_path (str): CSV to reconstruct validation examples.
+                model_checkpoint_dir (str): Directory with NER model, tokenizer, label2id.
+                max_length (int): Max sequence length.
+                batch_size (int): Evaluation batch size.
+
+            Returns:
+                dict: Token-level and entity-level metrics.
             """
             try:
-                # Log that the URL was received
-                self.logger_instance.info(f"Received request to extract info from URL: {url}")
+                # Load NER model
+                model_wrapper = EntityRecognitionModel(checkpoint_dir=model_checkpoint_dir)
 
-                response = requests.get(url, timeout=10)
-                response.raise_for_status()  # Check if the URL fetch was successful
+                # Build dataset
+                dataset = EntityRecognitionDataset(csv_path=csv_path, max_length=max_length)
+                dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
-                # Check if content is an image
-                if "image" not in response.headers["Content-Type"]:
-                    self.logger_instance.warning(f"The URL content is not an image: {url}")
-                    raise HTTPException(status_code=400, detail="The URL does not point to an image.")
+                # Run evaluator
+                evaluator = EntityRecognitionModelEvaluator(
+                    model=model_wrapper.model,
+                    label_map=model_wrapper.id2label,
+                    tokenizer=model_wrapper.tokenizer,
+                    evaluation_data_loader=dataloader
+                )
 
-                # Process the image
-                image_pil = Image.open(BytesIO(response.content))
+                metrics = evaluator.evaluate(device=model_wrapper.device)
 
-                # Extract nutritional info
-                nutritional_info = self.nutrition_info_extractor.extract_nutritional_info_from_image(image_pil)
+                return {"ner_evaluation": metrics}
 
-                # Log successful extraction
-                self.logger_instance.info(f"Successfully processed nutritional info from URL: {url}")
-                return {"nutritional_info": nutritional_info}
-
-            except requests.exceptions.Timeout:
-                self.logger_instance.error(f"Request to the URL timed out: {url}")
-                raise HTTPException(status_code=408, detail="Request to the URL timed out.")
-            except requests.exceptions.RequestException as e:
-                self.logger_instance.error(f"Error fetching the image from URL: {url}, Error: {str(e)}")
-                raise HTTPException(status_code=400, detail=f"Error fetching the image from URL: {str(e)}")
             except Exception as e:
-                self.logger_instance.error(f"Unexpected error while processing the URL: {url}, Error: {str(e)}")
-                raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+                self.logger_instance.error(f"Error evaluating NER model: {str(e)}")
+                raise HTTPException(status_code=500, detail=str(e))
 
-
-        # Define the /test_logs_and_exceptions endpoint (testing logs and exception handling)
+        # Testing logs and exception handling
         @self.app.get("/test_logs_and_exceptions")
         async def test_logs_and_exceptions():
             """

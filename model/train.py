@@ -5,37 +5,89 @@ from torch.optim import AdamW
 from transformers import BertTokenizer, BertForTokenClassification
 from tqdm import tqdm
 import os
-
+from typing import Optional
+import pandas as pd
+from model.entity_recognition_model import EntityRecognitionModel
+from utils.create_dataset import EntityRecognitionDataset, ClassifierDataset
+from torch.utils.data import DataLoader
+from sklearn.model_selection import train_test_split
+from model.evaluation import EntityRecognitionModelEvaluator, ClassifierModelEvaluator
+from utils.utils import save_checkpoint_entity_recognition, save_checkpoint_classifier
 class EntityRecognitionModelTrainer:
     
-    def __init__(self, model_path=None, model_name="dbmdz/bert-large-cased-finetuned-conll03-english", 
-                 dataloader=None, device=None, criterion=None, optimizer=None):
+    def __init__(self, csv_path: str, model_path: Optional[str] = None, model_name: Optional[str] = "bert-base-cased", epochs: Optional[int] = 10, learning_rate: Optional[float] = 5e-5):
         """
         Initializes the Entity Recognition Model Trainer for fine-tuning.
 
         Args:
-            model_path (str): Path to the directory where the trained model is saved locally (optional).
-            model_name (str): The name of the pre-trained model from Hugging Face if model_path is not provided.
-            dataloader: The DataLoader that provides the data in batches.
-            device: The device (CPU or GPU) where the model should run.
-            criterion: Loss function for training (default: CrossEntropyLoss).
-            optimizer: Optimizer for training (default: AdamW).
+            csv_path (str): Path to CSV file with training data.
+            model_path (Optional[str]): Directory to save or load the model from.
+            model_name (Optional[str]): Hugging Face model identifier (default: "bert-base-cased").
+            epochs (Optional[int]): Number of training epochs (default: 10).
+            learning_rate (Optional[float]): Learning rate (default: 5e-5).
         """
+        
+         # Load model/tokenizer
         if model_path and os.path.exists(model_path):
-            # Load model and tokenizer from a local folder
             self.model = BertForTokenClassification.from_pretrained(model_path)
             self.tokenizer = BertTokenizer.from_pretrained(model_path)
-        else:
-            # Load pre-trained model and tokenizer from Hugging Face model hub
+        elif model_name:
             self.model = BertForTokenClassification.from_pretrained(model_name)
             self.tokenizer = BertTokenizer.from_pretrained(model_name)
+        else:
+            raise ValueError("You must provide either a valid model_path or a model_name.")
+        
+        # Device configuration
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
+       
+        self.dataset = EntityRecognitionDataset(csv_path=csv_path)
+        
+        # Ensure label2id/id2label in model config matches the dataset
+        self.model.config.label2id = self.dataset.label2id
+        self.model.config.id2label = {i: l for l, i in self.dataset.label2id.items()}
+        self.num_labels = len(self.dataset.label2id)
+        
+        # Split examples into train and validation
+        train_ex, val_ex = train_test_split(self.dataset.examples, test_size=0.2, random_state=42)
 
-        # Initialize other properties
-        self.dataloader = dataloader
-        self.device = device
-        self.criterion = criterion if criterion else nn.CrossEntropyLoss()  # Default to CrossEntropyLoss for NER tasks
-        self.optimizer = optimizer if optimizer else AdamW(self.model.parameters(), lr=5e-5)  # Default AdamW optimizer
+        # Create datasets
+        self.train_dataset = EntityRecognitionDataset(examples=train_ex, label2id=label2id)
+        self.val_dataset = EntityRecognitionDataset(examples=val_ex, label2id=label2id)
 
+        # Create dataloader
+        self.train_dataloader = DataLoader(
+            self.train_dataset,
+            batch_size=8,
+            shuffle=True,
+            num_workers=4,
+            pin_memory=True
+        )
+
+        self.val_dataloader = DataLoader(
+            self.val_dataset,
+            batch_size=8,
+            shuffle=False,
+            num_workers=4,
+            pin_memory=True
+        )
+
+        # Optimizer
+        self.optimizer = AdamW(self.model.parameters(), lr=learning_rate)
+
+        # Store hyperparameters
+        self.epochs = epochs
+        self.learning_rate = learning_rate
+        
+        # Initialize ModelEvaluator
+        self.evaluator = EntityRecognitionModelEvaluator(
+            model=self.model,
+            label_map=self.model.config.id2label,
+            evaluation_data_loader=self.val_dataloader,
+            tokenizer=self.tokenizer
+        )
+        
+       
 
     def train_model(self, num_epochs=10):
         """
@@ -52,7 +104,7 @@ class EntityRecognitionModelTrainer:
             total_samples = 0
             correct_predictions = 0
 
-            for batch in tqdm(self.dataloader, desc=f"Epoch {epoch+1}/{num_epochs}"):
+            for batch in tqdm(self.train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}"):
                 input_ids = batch['input_ids'].to(self.device)
                 attention_mask = batch['attention_mask'].to(self.device)
                 labels = batch['labels'].to(self.device)
@@ -77,7 +129,7 @@ class EntityRecognitionModelTrainer:
                 correct_predictions += (preds == labels).sum().item()
 
             # Print the average loss for the epoch
-            avg_loss = running_loss / len(self.dataloader)
+            avg_loss = running_loss / len(self.train_dataloader)
             accuracy = correct_predictions / total_samples
             print(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}, Accuracy: {accuracy:.4f}")
 
@@ -85,46 +137,107 @@ class EntityRecognitionModelTrainer:
             self.validate_model()
 
             # Optionally, save the model after every epoch
-            self.save_model(epoch)
+            save_checkpoint_entity_recognition(model=self.model, tokenizer=self.tokenizer, label2id=self.dataset.label2id, optimizer=self.optimizer, epoch=epoch, loss=avg_loss)
 
     def validate_model(self):
         """
-        Validates the model on the validation set.
+        Validates the model on the validation set using token-level and entity-level metrics.
         """
-        self.model.eval()  # Set the model to evaluation mode
-        val_loss = 0.0
-        correct_predictions = 0
-        total_samples = 0
+        metrics = self.evaluator.evaluate(self.device)
+    
 
-        with torch.no_grad():
-            for batch in tqdm(self.dataloader, desc="Validation"):
-                input_ids = batch['input_ids'].to(self.device)
-                attention_mask = batch['attention_mask'].to(self.device)
-                labels = batch['labels'].to(self.device)
 
-                # Forward pass
-                outputs = self.model(input_ids, attention_mask=attention_mask, labels=labels)
+class ClassifyModelTrainer:
+    
+    def __init__(self, csv_path: str, model_path: Optional[str] = None, model_name: Optional[str] = "bert-base-cased", epochs: Optional[int] = 10, learning_rate: Optional[float] = 5e-5):
+        """
+        Initializes the Classifier Model Trainer for fine-tuning.
+
+        Args:
+            csv_path (str): Path to CSV file with training data.
+            model_path (Optional[str]): Directory to save or load the model from.
+            model_name (Optional[str]): Hugging Face model identifier (default: "bert-base-cased").
+            epochs (Optional[int]): Number of training epochs (default: 10).
+            learning_rate (Optional[float]): Learning rate (default: 5e-5).
+        """
+        
+        # Load model/tokenizer
+        if model_path and os.path.exists(model_path):
+            self.model = BertForTokenClassification.from_pretrained(model_path)
+            self.tokenizer = BertTokenizer.from_pretrained(model_path)
+        elif model_name:
+            self.model = BertForTokenClassification.from_pretrained(model_name)
+            self.tokenizer = BertTokenizer.from_pretrained(model_name)
+        else:
+            raise ValueError("You must provide either a valid model_path or a model_name.")
+        
+        # Device configuration
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
+       
+        self.dataset = ClassifierDataset(csv_path=csv_path)
+        
+        # Split into train/validation
+        train_ex, val_ex = train_test_split(dataset.examples, test_size=0.2, stratify=[ex['label'] for ex in dataset.examples], random_state=42)
+        self.train_dataset = ClassifierDataset(examples=train_ex, tokenizer=self.tokenizer)
+        self.val_dataset = ClassifierDataset(examples=val_ex, tokenizer=self.tokenizer)
+
+        self.train_dataloader = DataLoader(self.train_dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
+        self.val_dataloader = DataLoader(self.val_dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
+
+        self.optimizer = AdamW(self.model.parameters(), lr=learning_rate)
+
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.evaluator = ClassifierModelEvaluator(model=self.model, evaluation_data_loader=self.val_dataloader, tokenizer=self.tokenizer)
+
+    def train_model(self):
+        """
+        Trains the binary classifier.
+        """
+        for epoch in range(self.epochs):
+            self.model.train()
+            running_loss = 0.0
+            correct_predictions = 0
+            total_samples = 0
+
+            for batch in tqdm(self.train_dataloader, desc=f"Epoch {epoch + 1}/{self.epochs}"):
+                input_ids = batch["input_ids"].to(self.device)
+                attention_mask = batch["attention_mask"].to(self.device)
+                labels = batch["labels"].to(self.device)
+
+                self.optimizer.zero_grad()
+                outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
                 loss = outputs.loss
                 logits = outputs.logits
+                loss.backward()
+                self.optimizer.step()
 
-                val_loss += loss.item()
-                total_samples += input_ids.size(0)
-
-                # Calculate correct predictions
-                preds = torch.argmax(logits, dim=-1)
+                running_loss += loss.item()
+                preds = torch.argmax(logits, dim=1)
                 correct_predictions += (preds == labels).sum().item()
+                total_samples += labels.size(0)
 
-        avg_val_loss = val_loss / len(self.dataloader)
-        val_accuracy = correct_predictions / total_samples
-        print(f"Validation Loss: {avg_val_loss:.4f}, Validation Accuracy: {val_accuracy:.4f}")
+            avg_loss = running_loss / len(self.train_dataloader)
+            accuracy = correct_predictions / total_samples
+            print(f"Epoch {epoch+1}, Loss: {avg_loss:.4f}, Accuracy: {accuracy:.4f}")
 
-    def save_model(self, epoch, path="data/model_checkpoint.pth"):
+            # Validation
+            self.validate_model()
+
+            # Save
+            save_checkpoint_classifier(
+                model=self.model,
+                tokenizer=self.tokenizer,
+                optimizer=self.optimizer,
+                epoch=epoch,
+                loss=avg_loss,
+                output_dir=f"checkpoints/classifier_epoch_{epoch+1}"
+            )
+
+    def validate_model(self):
         """
-        Saves the trained model to the specified path.
-        
-        Args:
-            epoch: The epoch at which the model is saved.
-            path: The path to save the model.
+        Evaluates the classifier using standard binary classification metrics.
         """
-        torch.save(self.model.state_dict(), path)
-        print(f"Model saved at epoch {epoch}.")
+        metrics = self.evaluator.evaluate(self.device)
+        print("Validation metrics:", metrics)

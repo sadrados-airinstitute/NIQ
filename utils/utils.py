@@ -1,60 +1,117 @@
 import torch
 import json
+from transformers import BertForTokenClassification, BertTokenizer
+import os
 
-def save_model(model, model_name="final_model.pth"):
+def load_from_checkpoint_entity_recognition(checkpoint_path: str):
     """
-    Save the model's state dict (weights) to the models directory.
-    
-    Args:
-        model (torch.nn.Module): The model to be saved.
-        model_name (str): The name of the model file to save.
-    """
-    # Define the path for saving the model
-    model_path = f"models/{model_name}"
-    
-    # Save only the state_dict (recommended in PyTorch)
-    torch.save(model.state_dict(), model_path)
-    print(f"Model saved at {model_path}")
+    Loads a model, tokenizer, and label map from a checkpoint directory.
 
-def load_model(model, model_name="final_model.pth"):
-    """
-    Load the model's state dict (weights) from the models directory.
-    
     Args:
-        model (torch.nn.Module): The model to load the state dict into.
-        model_name (str): The name of the model file to load.
-    
+        checkpoint_path (str): path to saved model directory
+
     Returns:
-        model (torch.nn.Module): The model with loaded state dict.
+        model, tokenizer, label2id
     """
-    # Define the path to the saved model
-    model_path = f"models/{model_name}"
-    
-    # Load the model's state dict
-    model.load_state_dict(torch.load(model_path))
-    print(f"Model loaded from {model_path}")
-    
-    return model
+    model = BertForTokenClassification.from_pretrained(checkpoint_path)
+    tokenizer = BertTokenizer.from_pretrained(checkpoint_path)
 
-def save_checkpoint(model, optimizer, epoch, loss, filename="models/checkpoint.pth"):
+    with open(os.path.join(checkpoint_path, "label2id.json"), "r") as f:
+        label2id = json.load(f)
+        model.config.label2id = label2id
+        model.config.id2label = {v: k for k, v in label2id.items()}
+
+    return model, tokenizer, label2id
+
+def save_checkpoint_entity_recognition(model, tokenizer, label2id, optimizer, epoch, loss, output_dir="models/ner_model"):
+        """
+        Saves model, tokenizer, label map, and optimizer state.
+
+        Args:
+            model: Hugging Face model
+            tokenizer: Hugging Face tokenizer
+            label2id: label-to-id dictionary
+            optimizer: PyTorch optimizer
+            epoch: current epoch
+            loss: validation or training loss
+            output_dir: directory to store the checkpoint
+        """
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Save model and tokenizer
+        model.save_pretrained(output_dir)
+        tokenizer.save_pretrained(output_dir)
+
+        # Save label2id and id2label
+        with open(os.path.join(output_dir, "label2id.json"), "w") as f:
+            json.dump(label2id, f)
+
+        # Save optimizer and training state (optional)
+        torch.save({
+            "optimizer_state_dict": optimizer.state_dict(),
+            "epoch": epoch,
+            "loss": loss
+        }, os.path.join(output_dir, "training_state.pt"))
+
+        print(f"Model checkpoint saved at: {output_dir}")
+        
+        
+def save_checkpoint_classifier(model, tokenizer, optimizer, epoch, loss, output_dir="checkpoints/classifier"):
     """
-    Save the model checkpoint including the model state, optimizer state, epoch, and loss.
-    
+    Saves the classifier model, tokenizer, and optimizer state for resuming training or inference.
+
     Args:
-        model (torch.nn.Module): The model to save.
-        optimizer (torch.optim.Optimizer): The optimizer state.
-        epoch (int): The current epoch number.
-        loss (float): The current loss value.
-        filename (str): The file path to save the checkpoint.
+        model (PreTrainedModel): Hugging Face classification model (e.g., BertForSequenceClassification).
+        tokenizer (PreTrainedTokenizer): Hugging Face tokenizer.
+        optimizer (torch.optim.Optimizer): Optimizer used in training.
+        epoch (int): Current training epoch.
+        loss (float): Loss at current epoch (optional for tracking).
+        output_dir (str): Directory to save the checkpoint.
     """
-    checkpoint = {
-        'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'loss': loss,
-    }
-    torch.save(checkpoint, filename)
-    print(f"Checkpoint saved at {filename}")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Save model and tokenizer
+    model.save_pretrained(output_dir)
+    tokenizer.save_pretrained(output_dir)
+
+    # Save training state (e.g., optimizer, epoch, loss)
+    torch.save({
+        "epoch": epoch,
+        "loss": loss,
+        "optimizer_state_dict": optimizer.state_dict()
+    }, os.path.join(output_dir, "training_state.pt"))
+
+    print(f"Classifier checkpoint saved at: {output_dir}")
+    
+def load_from_checkpoint_classifier(checkpoint_dir: str, load_optimizer: bool = False):
+    """
+    Loads a classifier model, tokenizer, and optionally optimizer state from a saved checkpoint.
+
+    Args:
+        checkpoint_dir (str): Path to the directory containing the checkpoint.
+        load_optimizer (bool): Whether to load the optimizer state and training metadata.
+
+    Returns:
+        model (BertForSequenceClassification)
+        tokenizer (BertTokenizer)
+        optimizer_state (dict) or None: optimizer state and training metadata (epoch, loss) if requested
+    """
+    if not os.path.exists(checkpoint_dir):
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_dir}")
+
+    # Load model and tokenizer
+    model = BertForSequenceClassification.from_pretrained(checkpoint_dir)
+    tokenizer = BertTokenizer.from_pretrained(checkpoint_dir)
+
+    # Optionally load optimizer state
+    optimizer_state = None
+    training_state_path = os.path.join(checkpoint_dir, "training_state.pt")
+    if load_optimizer:
+        if not os.path.exists(training_state_path):
+            raise FileNotFoundError(f"Missing training_state.pt in {checkpoint_dir}")
+        optimizer_state = torch.load(training_state_path)
+
+    return model, tokenizer, optimizer_state
 
 def save_config(config, config_file="models/config.json"):
     """
@@ -87,18 +144,6 @@ def load_config(config_file="models/config.json"):
     # Load the configuration from the file
     with open(config_file, 'r') as f:
         config = json.load(f)
-    
+
     print(f"Configuration loaded from {config_file}")
     return config
-
-def set_random_seeds(seed=42):
-    """
-    Set random seeds for reproducibility across experiments.
-    
-    Args:
-        seed (int): The seed value to use for randomness.
-    """
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)  # For multi-GPU
-    np.random.seed(seed)

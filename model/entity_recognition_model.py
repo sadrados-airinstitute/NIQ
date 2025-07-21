@@ -1,64 +1,63 @@
 from transformers import BertTokenizer, BertForTokenClassification
 from transformers import pipeline
+from utils.utils import load_from_checkpoint_entity_recognition
+from typing import List, Tuple
 
 class EntityRecognitionModel:
+    """
+    EntityRecognitionModel loads a trained NER model from checkpoint and performs inference.
+    """
 
-    def __init__(self, model=None):
+    def __init__(self, model_dir: str = 'models/ner'):
         """
-        Initializes the EntityRecognitionModel. If no model is provided,
-        it defaults to a pre-trained BERT model fine-tuned for NER (dbmdz/bert-large-cased-finetuned-conll03-english).
-        
-        Args:
-            model: The pre-trained or custom model for NER. If None, the default BERT model is loaded.
-        """
-        if model is None:
-            # Load a pre-trained BERT model for token classification (NER)
-            self.model = BertForTokenClassification.from_pretrained('dbmdz/bert-large-cased-finetuned-conll03-english')
-            self.tokenizer = BertTokenizer.from_pretrained('dbmdz/bert-large-cased-finetuned-conll03-english')
-        else:
-            # Use the provided custom model
-            self.model = model
-            self.tokenizer = BertTokenizer.from_pretrained(model)  # Assuming tokenizer is also passed with the model
-        
-        # Initialize the NER pipeline
-        self.nlp_pipeline = pipeline('ner', model=self.model, tokenizer=self.tokenizer)
-
-    def extract_nutritional_entities(self, text: str, labels=None):
-        """
-        Extracts nutritional entities from the OCR-extracted text using a pre-trained NER model.
+        Initializes the model using a loading function.
 
         Args:
-            text (str): The OCR-extracted text.
-            labels (list): List of desired labels to filter entities (optional). Default is None.
+            model_dir (str): Path to the directory containing model, tokenizer, and label maps.
+            device (str): Device to use (e.g., 'cuda', 'cpu'). If None, auto-selects.
+        """
+
+        self.model, self.tokenizer, self.label2id, self.id2label = load_from_checkpoint_entity_recognition(model_dir)
+        
+        self.device = torch.device(device if device else ("cuda" if torch.cuda.is_available() else "cpu"))
+        self.model.to(self.device)
+        self.model.eval()
+        pass
+
+    def predict(self, text: str) -> List[Tuple[str, str]]:
+        """
+        Performs NER inference on the input text.
+
+        Args:
+            text (str): Text from OCR.
 
         Returns:
-            list: A list of recognized entities with labels and values.
+            List of (token, predicted_label) tuples.
         """
-        # Perform NER to extract entities
-        entities = self.nlp_pipeline(text)
-        
-        # If labels are provided, filter the entities based on the specified labels
-        if labels:
-            nutritional_entities = [entity for entity in entities if entity['label'] in labels]
+        if isinstance(text, str):
+            encoding = self.tokenizer(text, return_tensors="pt", truncation=True, is_split_into_words=False)
+            tokens = self.tokenizer.tokenize(text)
+            word_ids = encoding.word_ids()
         else:
-            # If no labels provided, return all entities
-            nutritional_entities = entities
-        
-        return nutritional_entities
-    
-    def preprocess_text(self, text: str):
-        """
-        Preprocesses the input text for better NER performance.
-        E.g., you can implement tokenization, stopword removal, etc.
+            encoding = self.tokenizer(text, is_split_into_words=True, return_tensors="pt", truncation=True)
+            tokens = text
+            word_ids = encoding.word_ids()
 
-        Args:
-            text (str): The raw OCR-extracted text.
+        encoding = {k: v.to(self.device) for k, v in encoding.items()}
 
-        Returns:
-            str: The cleaned or tokenized text.
-        """
-        # Clean and preprocess the text (this is just a placeholder)
-        # You can implement your custom text preprocessing logic here
-        # Example: Remove unwanted characters, lowercasing, etc.
-        cleaned_text = text.lower()  # Example: convert text to lowercase
-        return cleaned_text
+        with torch.no_grad():
+            outputs = self.model(**encoding)
+            logits = outputs.logits
+            predictions = torch.argmax(logits, dim=-1).squeeze().tolist()
+
+        final_preds = []
+        seen = set()
+        for idx, word_idx in enumerate(word_ids):
+            if word_idx is None or word_idx in seen:
+                continue
+            label_id = predictions[idx]
+            label = self.id2label[label_id]
+            final_preds.append((tokens[word_idx], label))
+            seen.add(word_idx)
+
+        return final_preds
