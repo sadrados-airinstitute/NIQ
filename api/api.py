@@ -1,7 +1,7 @@
 from fastapi import FastAPI, BackgroundTasks, File, UploadFile, HTTPException
 from model.ocr_model import OCRModel
 from model.entity_recognition_model import EntityRecognitionModel
-from model.train import EntityRecognitionModelTrainer
+from model.train import EntityRecognitionModelTrainer, ClassifierModelTrainer
 from utils.logger import Logger
 from io import BytesIO
 from PIL import Image
@@ -110,7 +110,7 @@ class API:
 
                 self.logger_instance.info(f"Initiating training with CSV: {csv_path}, epochs: {epochs}, learning_rate: {learning_rate}, model: {model_name}, save_to: {model_path}")
 
-                er_model_trainer = ClassifiernModelTrainer(csv_path=csv_path, model_path=model_path, model_name=model_name, epochs=epochs, learning_rate=learning_rate)
+                er_model_trainer = ClassifierModelTrainer(csv_path=csv_path, model_path=model_path, model_name=model_name, epochs=epochs, learning_rate=learning_rate)
                 
                 background_tasks.add_task(
                     er_model_trainer.train_model,
@@ -196,7 +196,7 @@ class API:
                 raise HTTPException(status_code=500, detail=str(e))
             
             
-        @self.app.post("/evaluate_ner_model")
+        @self.app.post("/evaluate_entity_recognition_model")
         def evaluate_ner_model(csv_path: str, model_checkpoint_dir: str, max_length: int = 128, batch_size: int = 8):
             """
             Evaluates a trained NER (BIO tagging) model on a validation set.

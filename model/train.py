@@ -147,7 +147,7 @@ class EntityRecognitionModelTrainer:
     
 
 
-class ClassifyModelTrainer:
+class ClassifierModelTrainer:
     
     def __init__(self, csv_path: str, model_path: Optional[str] = None, model_name: Optional[str] = "bert-base-cased", epochs: Optional[int] = 10, learning_rate: Optional[float] = 5e-5):
         """
